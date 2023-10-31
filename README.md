@@ -1,6 +1,12 @@
 # Crossmarks
 A simple tool to generate bookmarks keybinds for lf, zsh named dirs and cd aliases from a single source file.
 
+## Installation
+```bash
+cargo install --git https://github.com/mierak/crossmarks
+```
+
+## Usage
 ```
 crossmarks -h
 Usage: crossmarks --input <BOOKMARKS_FILE> <--lf <LF_FILE>|--zsh <ZSH_NAMED_DIRS_FILE>|--cd-alias <CD_ALIASES_FILE>>
