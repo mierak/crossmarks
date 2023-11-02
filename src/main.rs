@@ -1,12 +1,13 @@
-use std::error::Error;
-use std::fmt::Display;
-use std::fs::File;
-use std::{
-    fs,
-    io::{BufRead, BufReader},
-};
+use anyhow::bail;
+use anyhow::Result;
+use std::fs;
 
 use clap::{Args, Parser};
+use nom::branch::alt;
+use nom::bytes::complete::{take_till1, take_while1};
+use nom::character::complete::space1;
+use nom::sequence::Tuple;
+use nom::IResult;
 
 #[derive(Parser)]
 struct Config {
@@ -30,21 +31,31 @@ struct Outputs {
 macro_rules! write_formatted {
     ($bookmarks:ident, $output_path:ident, $fmt:literal) => {{
         let mut result = String::new();
-        for bookmark in &$bookmarks.0 {
-            result.push_str(&format!(
-                concat!($fmt, "\n"),
-                bookmark.alias(),
-                bookmark.path()
-            ));
+        for bookmark in &$bookmarks {
+            result.push_str(&format!(concat!($fmt, "\n"), bookmark.alias, bookmark.path));
         }
         fs::write($output_path, result)
     }};
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn main() -> Result<()> {
     let args = Config::parse();
-    let input = fs::File::open(args.bookmarks_file)?;
-    let bookmarks: Bookmarks = input.try_into()?;
+    let content = fs::read_to_string(args.bookmarks_file)?;
+    let bookmarks = match content
+        .lines()
+        .filter_map(|line| {
+            if line.trim_start().starts_with('#') {
+                None
+            } else {
+                Some(bookmark(line))
+            }
+        })
+        .map(|v| v.map(|v| v.1))
+        .collect::<Result<Vec<Bookmark<'_>>, nom::Err<nom::error::VerboseError<&str>>>>()
+    {
+        Ok(v) => v,
+        Err(err) => bail!(err.to_string()),
+    };
 
     if let Some(output_path) = args.outputs.lf_file {
         write_formatted!(bookmarks, output_path, "map g{} cd {}")?;
@@ -59,103 +70,71 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-struct Bookmark {
-    _input: String,
-    first_space_idx: usize,
-    second_space_idx: usize,
+#[derive(Debug, PartialEq)]
+struct Bookmark<'a> {
+    alias: &'a str,
+    path: &'a str,
 }
 
-impl std::fmt::Debug for Bookmark {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{{ _input: {}, alias: \"{}\", path: \"{}\", first_space_idx: {}, second_space_idx: {} }}",
-            self._input,
-            self.alias(),
-            self.path(),
-            self.first_space_idx,
-            self.second_space_idx,
-        )
+fn till_space(input: &str) -> IResult<&str, &str, nom::error::VerboseError<&str>> {
+    take_while1(|c| c != ' ')(input)
+}
+
+fn till_whitespace_or_hash(input: &str) -> IResult<&str, &str, nom::error::VerboseError<&str>> {
+    take_till1(|c: char| c.is_whitespace() || c == '#')(input)
+}
+
+fn quote(input: &str) -> IResult<&str, &str, nom::error::VerboseError<&str>> {
+    take_while1(|c| c == '"')(input)
+}
+
+fn with_simple_path(input: &str) -> IResult<&str, Bookmark<'_>, nom::error::VerboseError<&str>> {
+    let (rest, (alias, _, path)) = (till_space, space1, till_whitespace_or_hash).parse(input)?;
+    Ok((rest, Bookmark { alias, path }))
+}
+
+fn with_quoted_path(input: &str) -> IResult<&str, Bookmark<'_>, nom::error::VerboseError<&str>> {
+    let (rest, (alias, _, _, path, _)) =
+        (till_space, space1, quote, take_till1(|c| c == '"'), quote).parse(input)?;
+    Ok((rest, Bookmark { alias, path }))
+}
+
+fn bookmark(input: &str) -> IResult<&str, Bookmark<'_>, nom::error::VerboseError<&str>> {
+    alt((with_quoted_path, with_simple_path))(input)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use crate::bookmark;
+
+    #[test]
+    fn only_considers_till_second_space() {
+        let input = "a b c";
+
+        let result = bookmark(input).unwrap().1;
+
+        assert_eq!(result.alias, "a");
+        assert_eq!(result.path, "b");
     }
-}
 
-#[derive(Debug)]
-enum BookmarkError {
-    CommentLine(String),
-    InvalidFormat(String),
-}
+    #[test]
+    fn ignores_comment() {
+        let input = "a b# c";
 
-impl Display for BookmarkError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            BookmarkError::CommentLine(line) => write!(f, "Unexpected comment line: '{line}'"),
-            BookmarkError::InvalidFormat(line) => write!(f, "Invalid format: '{line}'"),
-        }
+        let result = bookmark(input).unwrap().1;
+
+        assert_eq!(result.alias, "a");
+        assert_eq!(result.path, "b");
     }
-}
 
-impl std::error::Error for BookmarkError {}
+    #[test]
+    fn correctly_handles_quoted_path() {
+        let input = r#"a "test test #test" asdf"#;
 
-impl TryFrom<String> for Bookmark {
-    type Error = BookmarkError;
+        let result = bookmark(input).unwrap().1;
 
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        if value.trim_start().starts_with('#') {
-            return Err(BookmarkError::CommentLine(value));
-        }
-
-        if value.split(' ').count() < 2 {
-            return Err(BookmarkError::InvalidFormat(value));
-        }
-
-        let first_space_idx = value.find(' ').unwrap();
-        let second_space_idx = value[first_space_idx + 1..]
-            .find(' ')
-            .unwrap_or(value.len());
-
-        if value[..first_space_idx].is_empty()
-            || value[first_space_idx + 1..second_space_idx].is_empty()
-        {
-            return Err(BookmarkError::InvalidFormat(value));
-        }
-
-        Ok(Self {
-            _input: value,
-            first_space_idx,
-            second_space_idx,
-        })
-    }
-}
-
-impl Bookmark {
-    pub fn path(&self) -> &str {
-        &self._input[self.first_space_idx + 1..self.second_space_idx]
-    }
-    pub fn alias(&self) -> &str {
-        &self._input[..self.first_space_idx]
-    }
-}
-
-struct Bookmarks(Vec<Bookmark>);
-impl TryFrom<File> for Bookmarks {
-    type Error = BookmarkError;
-
-    fn try_from(input: File) -> std::result::Result<Self, Self::Error> {
-        let read = BufReader::new(input);
-        let bms = read
-            .lines()
-            .filter_map(|v| -> Option<Result<Bookmark, BookmarkError>> {
-                v.map_or(None, |v| match v.try_into() {
-                    Ok(v) => Some(Ok(v)),
-                    Err(e) => match e {
-                        BookmarkError::CommentLine(_) => None,
-                        BookmarkError::InvalidFormat(line) => {
-                            Some(Err(BookmarkError::InvalidFormat(line)))
-                        }
-                    },
-                })
-            })
-            .collect::<Result<Vec<Bookmark>, BookmarkError>>()?;
-        Ok(Bookmarks(bms))
+        assert_eq!(result.alias, "a");
+        assert_eq!(result.path, "test test #test");
     }
 }
