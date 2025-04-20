@@ -1,6 +1,7 @@
 use anyhow::bail;
 use anyhow::Result;
 use std::fs;
+use std::io::Read;
 
 use clap::{Args, Parser};
 use nom::branch::alt;
@@ -11,8 +12,9 @@ use nom::IResult;
 
 #[derive(Parser)]
 struct Config {
+    /// Input bookmarks file. If not provided, stdin will be used.
     #[arg(short = 'i', long = "input")]
-    bookmarks_file: String,
+    bookmarks_file: Option<String>,
     #[command(flatten)]
     outputs: Outputs,
 }
@@ -40,17 +42,24 @@ macro_rules! write_formatted {
 
 fn main() -> Result<()> {
     let args = Config::parse();
-    let content = fs::read_to_string(args.bookmarks_file)?;
+    let content = args.bookmarks_file.map_or_else(
+        || {
+            let mut buf = String::new();
+            let _ = std::io::stdin().read_to_string(&mut buf);
+            Ok(buf)
+        },
+        fs::read_to_string,
+    )?;
+
     let bookmarks = match content
         .lines()
         .filter_map(|line| {
             if line.trim_start().starts_with('#') {
                 None
             } else {
-                Some(bookmark(line))
+                Some(bookmark(line).map(|v| v.1))
             }
         })
-        .map(|v| v.map(|v| v.1))
         .collect::<Result<Vec<Bookmark<'_>>, nom::Err<nom::error::VerboseError<&str>>>>()
     {
         Ok(v) => v,
