@@ -1,7 +1,9 @@
 use anyhow::bail;
 use anyhow::Result;
 use std::fs;
+use std::fs::create_dir_all;
 use std::io::Read;
+use std::path::Path;
 
 use clap::{Args, Parser};
 use nom::branch::alt;
@@ -67,12 +69,27 @@ fn main() -> Result<()> {
     };
 
     if let Some(output_path) = args.outputs.lf_file {
+        std::fs::create_dir_all(
+            Path::new(&output_path)
+                .parent()
+                .ok_or(anyhow::anyhow!("Invalid path {output_path:?}"))?,
+        )?;
         write_formatted!(bookmarks, output_path, "map g{} cd {}")?;
     }
     if let Some(output_path) = args.outputs.zsh_named_dirs_file {
+        std::fs::create_dir_all(
+            Path::new(&output_path)
+                .parent()
+                .ok_or(anyhow::anyhow!("Invalid path {output_path:?}"))?,
+        )?;
         write_formatted!(bookmarks, output_path, "hash -d {}={}")?;
     }
     if let Some(output_path) = args.outputs.cd_aliases_file {
+        std::fs::create_dir_all(
+            Path::new(&output_path)
+                .parent()
+                .ok_or(anyhow::anyhow!("Invalid path {output_path:?}"))?,
+        )?;
         write_formatted!(bookmarks, output_path, r#"alias cd{}="{}""#)?;
     }
 
